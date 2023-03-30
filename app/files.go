@@ -6,7 +6,7 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/ghodss/yaml"
+	"gopkg.in/yaml.v2"
 	"github.com/google/renameio"
 )
 

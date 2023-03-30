@@ -23,7 +23,8 @@ type Node struct {
 // NodeInfo is a convenience alias for client.NodeInfo.
 type NodeInfo = client.NodeInfo
 
-// Expose bindings.SnapshotParams. Used for setting dqlite's snapshot parameters.
+// SnapshotParams exposes bindings.SnapshotParams. Used for setting dqlite's
+// snapshot parameters.
 // SnapshotParams.Threshold controls after how many raft log entries a snapshot is
 // taken. The higher this number, the lower the frequency of the snapshots.
 // SnapshotParams.Trailing controls how many raft log entries are retained after
@@ -65,6 +66,17 @@ func WithFailureDomain(code uint64) Option {
 func WithSnapshotParams(params SnapshotParams) Option {
 	return func(options *options) {
 		options.SnapshotParams = params
+	}
+}
+
+// WithDiskMode enables dqlite disk-mode on the node.
+// WARNING: This is experimental API, use with caution
+// and prepare for data loss.
+// UNSTABLE: Behavior can change in future.
+// NOT RECOMMENDED for production use-cases, use at own risk.
+func WithDiskMode(disk bool) Option {
+	return func(options *options) {
+		options.DiskMode = disk
 	}
 }
 
@@ -113,6 +125,12 @@ func New(id uint64, address string, dir string, options ...Option) (*Node, error
 			return nil, err
 		}
 	}
+	if o.DiskMode {
+		if err := server.EnableDiskMode(); err != nil {
+			cancel()
+			return nil, err
+		}
+	}
 
 	s := &Node{
 		server:      server,
@@ -152,6 +170,7 @@ type options struct {
 	NetworkLatency uint64
 	FailureDomain  uint64
 	SnapshotParams bindings.SnapshotParams
+	DiskMode       bool
 }
 
 // Close the server, releasing all resources it created.
@@ -191,6 +210,14 @@ func ReconfigureMembership(dir string, cluster []NodeInfo) error {
 	return server.Recover(cluster)
 }
 
+// ReconfigureMembershipExt can be used to recover a cluster whose majority of
+// nodes have died, and therefore has become unavailable.
+//
+// It forces appending a new configuration to the raft log stored in the given
+// directory, effectively replacing the current configuration.
+// In comparision with ReconfigureMembership, this function takes the node role
+// into account and makes use of a dqlite API that supports extending the
+// NodeInfo struct.
 func ReconfigureMembershipExt(dir string, cluster []NodeInfo) error {
 	server, err := bindings.NewNode(context.Background(), 1, "1", dir)
 	if err != nil {
@@ -204,5 +231,6 @@ func ReconfigureMembershipExt(dir string, cluster []NodeInfo) error {
 func defaultOptions() *options {
 	return &options{
 		DialFunc: client.DefaultDialFunc,
+		DiskMode: false, // Be explicit about not enabling disk-mode by default.
 	}
 }

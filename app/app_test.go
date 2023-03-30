@@ -14,6 +14,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -613,7 +614,7 @@ func TestRolesAdjustment_ReplaceVoterHonorFailureDomain(t *testing.T) {
 	// A voter in failure domain 2 goes offline.
 	cleanups[2]()
 
-	time.Sleep(12 * time.Second)
+	time.Sleep(18 * time.Second)
 
 	cli, err := apps[0].Leader(context.Background())
 	require.NoError(t, err)
@@ -680,7 +681,7 @@ func TestRolesAdjustment_ReplaceVoterHonorWeight(t *testing.T) {
 	require.NoError(t, cli.Weight(context.Background(), uint64(10)))
 	defer cli.Close()
 
-	time.Sleep(12 * time.Second)
+	time.Sleep(18 * time.Second)
 
 	cli, err = apps[0].Leader(context.Background())
 	require.NoError(t, err)
@@ -779,7 +780,7 @@ func TestRolesAdjustment_ReplaceStandBy(t *testing.T) {
 	// A stand-by goes offline.
 	cleanups[4]()
 
-	time.Sleep(15 * time.Second)
+	time.Sleep(20 * time.Second)
 
 	cli, err := apps[0].Leader(context.Background())
 	require.NoError(t, err)
@@ -836,7 +837,7 @@ func TestRolesAdjustment_ReplaceStandByHonorFailureDomains(t *testing.T) {
 	// A stand-by from failure domain 1 goes offline.
 	cleanups[4]()
 
-	time.Sleep(15 * time.Second)
+	time.Sleep(20 * time.Second)
 
 	cli, err := apps[0].Leader(context.Background())
 	require.NoError(t, err)
@@ -860,6 +861,19 @@ func TestRolesAdjustment_ReplaceStandByHonorFailureDomains(t *testing.T) {
 // Open a database on a fresh one-node cluster.
 func TestOpen(t *testing.T) {
 	app, cleanup := newApp(t, app.WithAddress("127.0.0.1:9000"))
+	defer cleanup()
+
+	db, err := app.Open(context.Background(), "test")
+	require.NoError(t, err)
+	defer db.Close()
+
+	_, err = db.ExecContext(context.Background(), "CREATE TABLE foo(n INT)")
+	assert.NoError(t, err)
+}
+
+// Open a database with disk-mode on a fresh one-node cluster.
+func TestOpenDisk(t *testing.T) {
+	app, cleanup := newApp(t, app.WithAddress("127.0.0.1:9000"), app.WithDiskMode(true))
 	defer cleanup()
 
 	db, err := app.Open(context.Background(), "test")
@@ -1025,6 +1039,27 @@ func TestExternalConn(t *testing.T) {
 	assert.Equal(t, client.Voter, cluster[0].Role)
 	assert.Equal(t, client.Voter, cluster[1].Role)
 	assert.Equal(t, client.Voter, cluster[2].Role)
+}
+
+func TestParallelNewApp(t *testing.T) {
+	t.Parallel()
+	for i := 0; i < 100; i++ {
+		i := i
+		t.Run(fmt.Sprintf("run-%d", i), func(tt *testing.T) {
+			tt.Parallel()
+			// TODO: switch this to tt.TempDir when we switch to
+			tmpDir := filepath.Join(os.TempDir(), strings.ReplaceAll(tt.Name(), "/", "-"))
+			require.NoError(tt, os.MkdirAll(tmpDir, 0700))
+			dqApp, err := app.New(tmpDir,
+				app.WithAddress(fmt.Sprintf("127.0.0.1:%d", 10200+i)),
+			)
+			require.NoError(tt, err)
+			defer func() {
+				_ = os.RemoveAll(tmpDir)
+				_ = dqApp.Close()
+			}()
+		})
+	}
 }
 
 func newAppWithDir(t *testing.T, dir string, options ...app.Option) (*app.App, func()) {

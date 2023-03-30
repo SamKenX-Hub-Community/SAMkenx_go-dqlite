@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/canonical/go-dqlite"
@@ -18,6 +19,10 @@ import (
 	"github.com/pkg/errors"
 	"golang.org/x/sync/semaphore"
 )
+
+// used to create a unique driver name, MUST be modified atomically
+// https://pkg.go.dev/sync/atomic#AddInt64
+var driverIndex int64
 
 // App is a high-level helper for initializing a typical dqlite-based Go
 // application.
@@ -58,7 +63,7 @@ func New(dir string, options ...Option) (app *App, err error) {
 	if o.Conn != nil {
 		listener, err := net.Listen("unix", o.UnixSocket)
 		if err != nil {
-			return nil, fmt.Errorf("Failed to autobind unix socket: %w", err)
+			return nil, fmt.Errorf("failed to autobind unix socket: %w", err)
 		}
 
 		nodeBindAddress = listener.Addr().String()
@@ -187,6 +192,7 @@ func New(dir string, options ...Option) (app *App, err error) {
 		dqlite.WithFailureDomain(o.FailureDomain),
 		dqlite.WithNetworkLatency(o.NetworkLatency),
 		dqlite.WithSnapshotParams(o.SnapshotParams),
+		dqlite.WithDiskMode(o.DiskMode),
 	)
 	if err != nil {
 		stop()
@@ -211,18 +217,12 @@ func New(dir string, options ...Option) (app *App, err error) {
 		stop()
 		return nil, fmt.Errorf("create driver: %w", err)
 	}
-	driverIndex++
-	driverName := fmt.Sprintf("dqlite-%d", driverIndex)
+	driverName := fmt.Sprintf("dqlite-%d", atomic.AddInt64(&driverIndex, 1))
 	sql.Register(driverName, driver)
 
 	if o.Voters < 3 || o.Voters%2 == 0 {
 		stop()
 		return nil, fmt.Errorf("invalid voters %d: must be an odd number greater than 1", o.Voters)
-	}
-
-	if o.StandBys%2 == 0 {
-		stop()
-		return nil, fmt.Errorf("invalid stand-bys %d: must be an odd number", o.StandBys)
 	}
 
 	if runtime.GOOS != "linux" && nodeBindAddress[0] == '@' {
@@ -276,13 +276,13 @@ func New(dir string, options ...Option) (app *App, err error) {
 				n, err := remote.Write(data)
 				if err != nil || n != len(data) {
 					remote.Close()
-					panic(fmt.Errorf("Failed to write connection header: %w", err))
+					panic(fmt.Errorf("failed to write connection header: %w", err))
 				}
 
 				local, err := net.Dial("unix", nodeBindAddress)
 				if err != nil {
 					remote.Close()
-					panic(fmt.Errorf("Failed to connect to bind address %q: %w", nodeBindAddress, err))
+					panic(fmt.Errorf("failed to connect to bind address %q: %w", nodeBindAddress, err))
 				}
 
 				go proxy(app.ctx, remote, local, nil)
@@ -304,6 +304,8 @@ func (a *App) Handover(ctx context.Context) error {
 	// Set a hard limit of one minute, in case the user-provided context
 	// has no expiration. That avoids the call to stop responding forever
 	// in case a majority of the cluster is down and no leader is available.
+	// Watch out when removing or editing this context, the for loop at the
+	// end of this function will possibly run "forever" without it.
 	var cancel context.CancelFunc
 	ctx, cancel = context.WithTimeout(ctx, time.Minute)
 	defer cancel()
@@ -367,13 +369,28 @@ func (a *App) Handover(ctx context.Context) error {
 				return fmt.Errorf("find new leader: %w", err)
 			}
 			defer cli.Close()
+			break
 		}
 	}
 
 	// Demote ourselves if we have promoted someone else.
 	if role != -1 {
-		if err := cli.Assign(ctx, a.ID(), client.Spare); err != nil {
-			return fmt.Errorf("demote ourselves: %w", err)
+		// Try a while before failing. The new leader has to possibly commit an entry
+		// from its new term in order to commit the last configuration change, wait a bit
+		// for that to happen and don't fail immediately
+		for {
+			err = cli.Assign(ctx, a.ID(), client.Spare)
+			if err == nil {
+				return nil
+			}
+			select {
+			case <-ctx.Done():
+				return fmt.Errorf("demote ourselves context done: %w", err)
+			default:
+				// Wait a bit before trying again
+				time.Sleep(time.Second)
+				continue
+			}
 		}
 	}
 
@@ -662,7 +679,7 @@ func (a *App) makeRolesChanges(nodes []client.NodeInfo) RolesChanges {
 		// sem.Acquire will not block forever because the goroutines
 		// that release the semaphore will eventually timeout.
 		if err := sem.Acquire(context.Background(), 1); err != nil {
-			a.warn("Failed to acquire semaphore: %v", err)
+			a.warn("failed to acquire semaphore: %v", err)
 			wg.Done()
 			continue
 		}
@@ -709,5 +726,3 @@ func (a *App) warn(format string, args ...interface{}) {
 func (a *App) error(format string, args ...interface{}) {
 	a.log(client.LogError, format, args...)
 }
-
-var driverIndex = 0

@@ -8,7 +8,8 @@ jobs:
       matrix:
         target:
           - focal
-          - impish
+          - jammy
+          - kinetic
     runs-on: ubuntu-20.04
     steps:
     - name: Clone the repositories
@@ -39,7 +40,7 @@ jobs:
           debuild -S -sa -us -uc -d
 
     - name: Upload artifacts
-      uses: actions/upload-artifact@v2
+      uses: actions/upload-artifact@v3
       with:
         name: debian-${{ matrix.target }}
         if-no-files-found: error

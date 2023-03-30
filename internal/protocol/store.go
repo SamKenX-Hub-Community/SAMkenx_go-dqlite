@@ -2,6 +2,7 @@ package protocol
 
 import (
 	"context"
+	"sync"
 )
 
 // NodeRole identifies the role of a node.
@@ -23,9 +24,9 @@ func (r NodeRole) String() string {
 
 // NodeInfo holds information about a single server.
 type NodeInfo struct {
-	ID      uint64
-	Address string
-	Role    NodeRole
+	ID      uint64   `yaml:"ID"`
+	Address string   `yaml:"Address"`
+	Role    NodeRole `yaml:"Role"`
 }
 
 // NodeStore is used by a dqlite client to get an initial list of candidate
@@ -45,23 +46,31 @@ type NodeStore interface {
 
 // InmemNodeStore keeps the list of servers in memory.
 type InmemNodeStore struct {
+	mu      sync.RWMutex
 	servers []NodeInfo
 }
 
 // NewInmemNodeStore creates NodeStore which stores its data in-memory.
 func NewInmemNodeStore() *InmemNodeStore {
 	return &InmemNodeStore{
+		mu:      sync.RWMutex{},
 		servers: make([]NodeInfo, 0),
 	}
 }
 
 // Get the current servers.
 func (i *InmemNodeStore) Get(ctx context.Context) ([]NodeInfo, error) {
-	return i.servers, nil
+	i.mu.RLock()
+	defer i.mu.RUnlock()
+	ret := make([]NodeInfo, len(i.servers))
+	copy(ret, i.servers)
+	return ret, nil
 }
 
 // Set the servers.
 func (i *InmemNodeStore) Set(ctx context.Context, servers []NodeInfo) error {
+	i.mu.Lock()
+	defer i.mu.Unlock()
 	i.servers = servers
 	return nil
 }

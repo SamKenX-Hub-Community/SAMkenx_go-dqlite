@@ -17,6 +17,7 @@ package driver
 import (
 	"context"
 	"database/sql/driver"
+	"fmt"
 	"io"
 	"net"
 	"reflect"
@@ -51,12 +52,16 @@ const (
 	errIoErr               = 10
 	errIoErrNotLeader      = errIoErr | 40<<8
 	errIoErrLeadershipLost = errIoErr | (41 << 8)
+	errNotFound            = 12
 
 	// Legacy error codes before version-3.32.1+replication4. Kept here
 	// for backward compatibility, but should eventually be dropped.
 	errIoErrNotLeaderLegacy      = errIoErr | 32<<8
 	errIoErrLeadershipLostLegacy = errIoErr | (33 << 8)
 )
+
+// Max amount of parameters in a Tuple.
+const MaxTupleParams = 255
 
 // Option can be used to tweak driver parameters.
 type Option func(*options)
@@ -346,11 +351,18 @@ func (c *Conn) PrepareContext(ctx context.Context, query string) (driver.Stmt, e
 
 	protocol.EncodePrepare(&c.request, uint64(c.id), query)
 
-	if err := c.protocol.Call(ctx, &c.request, &c.response); err != nil {
+	var start time.Time
+	if c.tracing != client.LogNone {
+		start = time.Now()
+	}
+	err := c.protocol.Call(ctx, &c.request, &c.response);
+	if c.tracing != client.LogNone {
+		c.log(c.tracing, "%.3fs request prepared: %q", time.Since(start).Seconds(), query)
+	}
+	if err != nil {
 		return nil, driverError(c.log, err)
 	}
 
-	var err error
 	stmt.db, stmt.id, stmt.params, err = protocol.DecodeStmt(&c.response)
 	if err != nil {
 		return nil, driverError(c.log, err)
@@ -370,19 +382,28 @@ func (c *Conn) Prepare(query string) (driver.Stmt, error) {
 
 // ExecContext is an optional interface that may be implemented by a Conn.
 func (c *Conn) ExecContext(ctx context.Context, query string, args []driver.NamedValue) (driver.Result, error) {
-	protocol.EncodeExecSQL(&c.request, uint64(c.id), query, args)
-
-	if err := c.protocol.Call(ctx, &c.request, &c.response); err != nil {
-		return nil, driverError(c.log, err)
+	if len(args) > MaxTupleParams {
+		return nil, driverError(c.log, fmt.Errorf("too many parameters (%d) max = %d", len(args), MaxTupleParams))
 	}
 
-	result, err := protocol.DecodeResult(&c.response)
+	protocol.EncodeExecSQL(&c.request, uint64(c.id), query, args)
+
+	var start time.Time
+	if c.tracing != client.LogNone {
+		start = time.Now()
+	}
+	err := c.protocol.Call(ctx, &c.request, &c.response);
+	if c.tracing != client.LogNone {
+		c.log(c.tracing, "%.3fs request exec: %q", time.Since(start).Seconds(), query)
+	}
 	if err != nil {
 		return nil, driverError(c.log, err)
 	}
 
-	if c.tracing != client.LogNone {
-		c.log(c.tracing, "exec: %s", query)
+	var result protocol.Result
+	result, err = protocol.DecodeResult(&c.response)
+	if err != nil {
+		return nil, driverError(c.log, err)
 	}
 
 	return &Result{result: result}, nil
@@ -395,19 +416,28 @@ func (c *Conn) Query(query string, args []driver.Value) (driver.Rows, error) {
 
 // QueryContext is an optional interface that may be implemented by a Conn.
 func (c *Conn) QueryContext(ctx context.Context, query string, args []driver.NamedValue) (driver.Rows, error) {
-	protocol.EncodeQuerySQL(&c.request, uint64(c.id), query, args)
-
-	if err := c.protocol.Call(ctx, &c.request, &c.response); err != nil {
-		return nil, driverError(c.log, err)
+	if len(args) > MaxTupleParams {
+		return nil, driverError(c.log, fmt.Errorf("too many parameters (%d) max = %d", len(args), MaxTupleParams))
 	}
 
-	rows, err := protocol.DecodeRows(&c.response)
+	protocol.EncodeQuerySQL(&c.request, uint64(c.id), query, args)
+
+	var start time.Time
+	if c.tracing != client.LogNone {
+		start = time.Now()
+	}
+	err := c.protocol.Call(ctx, &c.request, &c.response);
+	if c.tracing != client.LogNone {
+		c.log(c.tracing, "%.3fs request query: %q", time.Since(start).Seconds(), query)
+	}
 	if err != nil {
 		return nil, driverError(c.log, err)
 	}
 
-	if c.tracing != client.LogNone {
-		c.log(c.tracing, "query: %s", query)
+	var rows protocol.Rows
+	rows, err = protocol.DecodeRows(&c.response)
+	if err != nil {
+		return nil, driverError(c.log, err)
 	}
 
 	return &Rows{
@@ -544,19 +574,28 @@ func (s *Stmt) NumInput() int {
 //
 // ExecContext must honor the context timeout and return when it is canceled.
 func (s *Stmt) ExecContext(ctx context.Context, args []driver.NamedValue) (driver.Result, error) {
-	protocol.EncodeExec(s.request, s.db, s.id, args)
-
-	if err := s.protocol.Call(ctx, s.request, s.response); err != nil {
-		return nil, driverError(s.log, err)
+	if len(args) > MaxTupleParams {
+		return nil, driverError(s.log, fmt.Errorf("too many parameters (%d) max = %d", len(args), MaxTupleParams))
 	}
 
-	result, err := protocol.DecodeResult(s.response)
+	protocol.EncodeExec(s.request, s.db, s.id, args)
+
+	var start time.Time
+	if s.tracing != client.LogNone {
+		start = time.Now()
+	}
+	err := s.protocol.Call(ctx, s.request, s.response);
+	if s.tracing != client.LogNone {
+		s.log(s.tracing, "%.3fs request prepared: %q", time.Since(start).Seconds(), s.sql)
+	}
 	if err != nil {
 		return nil, driverError(s.log, err)
 	}
 
-	if s.tracing != client.LogNone {
-		s.log(s.tracing, "exec prepared: %s", s.sql)
+	var result protocol.Result
+	result, err = protocol.DecodeResult(s.response)
+	if err != nil {
+		return nil, driverError(s.log, err)
 	}
 
 	return &Result{result: result}, nil
@@ -572,19 +611,28 @@ func (s *Stmt) Exec(args []driver.Value) (driver.Result, error) {
 //
 // QueryContext must honor the context timeout and return when it is canceled.
 func (s *Stmt) QueryContext(ctx context.Context, args []driver.NamedValue) (driver.Rows, error) {
-	protocol.EncodeQuery(s.request, s.db, s.id, args)
-
-	if err := s.protocol.Call(ctx, s.request, s.response); err != nil {
-		return nil, driverError(s.log, err)
+	if len(args) > MaxTupleParams {
+		return nil, driverError(s.log, fmt.Errorf("too many parameters (%d) max = %d", len(args), MaxTupleParams))
 	}
 
-	rows, err := protocol.DecodeRows(s.response)
+	protocol.EncodeQuery(s.request, s.db, s.id, args)
+
+	var start time.Time
+	if s.tracing != client.LogNone {
+		start = time.Now()
+	}
+	err := s.protocol.Call(ctx, s.request, s.response);
+	if s.tracing != client.LogNone {
+		s.log(s.tracing, "%.3fs request prepared: %q", time.Since(start).Seconds(), s.sql)
+	}
 	if err != nil {
 		return nil, driverError(s.log, err)
 	}
 
-	if s.tracing != client.LogNone {
-		s.log(s.tracing, "query prepared: %s", s.sql)
+	var rows protocol.Rows
+	rows, err = protocol.DecodeRows(s.response)
+	if err != nil {
+		return nil, driverError(s.log, err)
 	}
 
 	return &Rows{ctx: ctx, request: s.request, response: s.response, protocol: s.protocol, rows: rows}, nil
@@ -751,6 +799,9 @@ func driverError(log client.LogFunc, err error) error {
 			fallthrough
 		case errIoErrLeadershipLost:
 			log(client.LogDebug, "leadership lost (%d - %s)", err.Code, err.Description)
+			return driver.ErrBadConn
+		case errNotFound:
+			log(client.LogDebug, "not found - potentially after leadership loss (%d - %s)", err.Code, err.Description)
 			return driver.ErrBadConn
 		default:
 			// FIXME: the server side sometimes return SQLITE_OK

@@ -10,7 +10,6 @@ package bindings
 
 #include <dqlite.h>
 #include <raft.h>
-#include <sqlite3.h>
 
 #define EMIT_BUF_LEN 1024
 
@@ -61,16 +60,6 @@ static void setInfo(dqlite_node_info_ext *infos, unsigned i, dqlite_node_id id,
 	info->dqlite_role = role;
 }
 
-static int sqlite3ConfigSingleThread()
-{
-	return sqlite3_config(SQLITE_CONFIG_SINGLETHREAD);
-}
-
-static int sqlite3ConfigMultiThread()
-{
-	return sqlite3_config(SQLITE_CONFIG_MULTITHREAD);
-}
-
 */
 import "C"
 import (
@@ -102,20 +91,6 @@ func init() {
 	C.signal(C.SIGPIPE, C.SIG_IGN)
 }
 
-func ConfigSingleThread() error {
-	if rc := C.sqlite3ConfigSingleThread(); rc != 0 {
-		return protocol.Error{Message: C.GoString(C.sqlite3_errstr(rc)), Code: int(rc)}
-	}
-	return nil
-}
-
-func ConfigMultiThread() error {
-	if rc := C.sqlite3ConfigMultiThread(); rc != 0 {
-		return protocol.Error{Message: C.GoString(C.sqlite3_errstr(rc)), Code: int(rc)}
-	}
-	return nil
-}
-
 // NewNode creates a new Node instance.
 func NewNode(ctx context.Context, id uint64, address string, dir string) (*Node, error) {
 	var server *C.dqlite_node
@@ -129,6 +104,7 @@ func NewNode(ctx context.Context, id uint64, address string, dir string) (*Node,
 
 	if rc := C.dqlite_node_create(cid, caddress, cdir, &server); rc != 0 {
 		errmsg := C.GoString(C.dqlite_node_errmsg(server))
+		C.dqlite_node_destroy(server)
 		return nil, fmt.Errorf("%s", errmsg)
 	}
 
@@ -185,6 +161,14 @@ func (s *Node) SetFailureDomain(code uint64) error {
 	ccode := C.failure_domain_t(code)
 	if rc := C.dqlite_node_set_failure_domain(server, ccode); rc != 0 {
 		return fmt.Errorf("set failure domain: %d", rc)
+	}
+	return nil
+}
+
+func (s *Node) EnableDiskMode() error {
+	server := (*C.dqlite_node)(unsafe.Pointer(s.node))
+	if rc := C.dqlite_node_enable_disk_mode(server); rc != 0 {
+		return fmt.Errorf("failed to set disk mode")
 	}
 	return nil
 }

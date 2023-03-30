@@ -10,8 +10,8 @@ import (
 	"time"
 
 	"github.com/canonical/go-dqlite/internal/bindings"
-	"github.com/canonical/go-dqlite/internal/logging"
 	"github.com/canonical/go-dqlite/internal/protocol"
+	"github.com/canonical/go-dqlite/logging"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -35,7 +35,7 @@ func TestConnector_Success(t *testing.T) {
 	assert.NoError(t, client.Close())
 
 	check([]string{
-		"DEBUG: attempt 0: server @test-0: connected",
+		"DEBUG: attempt 1: server @test-0: connected",
 	})
 }
 
@@ -53,9 +53,9 @@ func TestConnector_LimitRetries(t *testing.T) {
 	assert.Equal(t, protocol.ErrNoAvailableLeader, err)
 
 	check([]string{
-		"WARN: attempt 0: server @test-123: dial: dial unix @test-123: connect: connection refused",
 		"WARN: attempt 1: server @test-123: dial: dial unix @test-123: connect: connection refused",
 		"WARN: attempt 2: server @test-123: dial: dial unix @test-123: connect: connection refused",
+		"WARN: attempt 3: server @test-123: dial: dial unix @test-123: connect: connection refused",
 	})
 }
 
@@ -73,8 +73,8 @@ func TestConnector_DialTimeout(t *testing.T) {
 	assert.Equal(t, protocol.ErrNoAvailableLeader, err)
 
 	check([]string{
-		"WARN: attempt 0: server 8.8.8.8:9000: dial: dial tcp 8.8.8.8:9000: i/o timeout",
 		"WARN: attempt 1: server 8.8.8.8:9000: dial: dial tcp 8.8.8.8:9000: i/o timeout",
+		"WARN: attempt 2: server 8.8.8.8:9000: dial: dial tcp 8.8.8.8:9000: i/o timeout",
 	})
 }
 
@@ -107,7 +107,7 @@ func TestConnector_ContextCanceled(t *testing.T) {
 	assert.Equal(t, protocol.ErrNoAvailableLeader, err)
 
 	check([]string{
-		"WARN: attempt 0: server 1.2.3.4:666: dial: dial tcp 1.2.3.4:666: i/o timeout",
+		"WARN: attempt 1: server 1.2.3.4:666: dial: dial tcp 1.2.3.4:666: i/o timeout",
 	})
 }
 
@@ -123,20 +123,20 @@ func TestConnector_AttemptTimeout(t *testing.T) {
 		RetryLimit:     1,
 	}
 	connector := protocol.NewConnector(0, store, config, logging.Test(t))
-
-	conns := []net.Conn{}
+	var conn net.Conn
 	go func() {
-		conn, err := listener.Accept()
+		conn, err = listener.Accept()
 		require.NoError(t, err)
-		conns = append(conns, conn)
+		require.NotNil(t, conn)
+	}()
+	defer func() {
+		if conn != nil {
+			_ = conn.Close()
+		}
 	}()
 
 	_, err = connector.Connect(context.Background())
 	assert.Equal(t, protocol.ErrNoAvailableLeader, err)
-
-	for _, conn := range conns {
-		conn.Close()
-	}
 }
 
 // If an election is in progress, the connector will retry until a leader gets
